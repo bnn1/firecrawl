@@ -18,10 +18,10 @@ x-common-service: &common-service
 
 x-common-env: &common-env
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-  REDIS_RATE_LIMIT_URL: ${REDIS_RATE_LIMIT_URL:-${REDIS_URL:-redis://redis:6379}}
+  REDIS_RATE_LIMIT_URL: ${REDIS_RATE_LIMIT_URL:-redis://redis:6379}
   PLAYWRIGHT_MICROSERVICE_URL: ${PLAYWRIGHT_MICROSERVICE_URL:-http://playwright-service:3000/scrape}
   POSTGRES_USER: ${POSTGRES_USER:-postgres}
-  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Coolify}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
   POSTGRES_DB: ${POSTGRES_DB:-postgres}
   POSTGRES_HOST: ${POSTGRES_HOST:-nuq-postgres}
   POSTGRES_PORT: ${POSTGRES_PORT:-5432}
@@ -52,7 +52,8 @@ x-common-env: &common-env
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
   # Leave unset to use PostgreSQL for the queue.
   NUQ_BACKEND: ${NUQ_BACKEND}
-  FDB_CLUSTER_FILE: ${NUQ_BACKEND:+/var/fdb/fdb.cluster}
+  # Only set FDB_CLUSTER_FILE=/var/fdb/fdb.cluster when enabling NUQ_BACKEND=fdb.
+  FDB_CLUSTER_FILE: ${FDB_CLUSTER_FILE:-}
 
 services:
   playwright-service:
@@ -140,7 +141,7 @@ services:
     build: apps/nuq-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Coolify}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
     logging:
       driver: "json-file"
