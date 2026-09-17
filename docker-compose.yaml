@@ -56,8 +56,10 @@ x-common-env: &common-env
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
   # Set NUQ_BACKEND=fdb to run the queue on FoundationDB instead of Postgres
-  NUQ_BACKEND: ${NUQ_BACKEND}
-  FDB_CLUSTER_FILE: ${NUQ_BACKEND:+/var/fdb/fdb.cluster}
+  NUQ_BACKEND: ${NUQ_BACKEND:-pg}
+  # Keep empty for PostgreSQL. Coolify does not support Compose's :+ operator.
+  # For FoundationDB, also set FDB_CLUSTER_FILE=/var/fdb/fdb.cluster.
+  FDB_CLUSTER_FILE: ${FDB_CLUSTER_FILE:-}
 
 services:
   playwright-service:
@@ -116,11 +118,27 @@ services:
       nuq-postgres:
         condition: service_healthy
         required: false
+    # Coolify reaches the container over its Docker network. Keep the direct,
+    # unauthenticated host port private so it cannot bypass proxy access controls.
     ports:
-      - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
+      - "127.0.0.1:${PORT:-3002}:${INTERNAL_PORT:-3002}"
     volumes:
       - fdb-cluster-file:/var/fdb:ro
     command: node dist/src/harness.js --start-docker
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "--show-error",
+          "http://127.0.0.1:${INTERNAL_PORT:-3002}/",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     # Resource limits for Docker Compose (not Swarm)
     # Increase if you have more CPU cores/RAM available
     cpus: 4.0
@@ -190,9 +208,9 @@ services:
         max-file: "3"
         compress: "true"
 
-  # FoundationDB queue backend (experimental). Enable by setting
-  # NUQ_BACKEND=fdb; the api container reads the shared cluster file from the
-  # fdb-cluster-file volume. Replaces nuq-postgres once stable.
+  # FoundationDB queue backend (experimental). Enable with NUQ_BACKEND=fdb and
+  # FDB_CLUSTER_FILE=/var/fdb/fdb.cluster; the api reads the shared cluster file
+  # from the fdb-cluster-file volume. Replaces nuq-postgres once stable.
   foundationdb:
     image: foundationdb/foundationdb:7.3.63
     environment:
@@ -224,6 +242,8 @@ services:
     networks:
       - backend
     restart: "no"
+    # Coolify must not count a successfully exited one-shot job as unhealthy.
+    exclude_from_hc: true
 
 networks:
   backend:

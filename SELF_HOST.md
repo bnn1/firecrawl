@@ -9,13 +9,13 @@ the services and configuration match the revision you checked out.
 
 ## Pick the guide for the job
 
-| If you need to decide or do this | Start here |
-| --- | --- |
-| Decide whether self-hosting fits and run the first scrape | [Public self-hosting guide](https://docs.firecrawl.dev/contributing/self-host) |
-| Check which variables and services exist at this revision | [Root Compose configuration](./docker-compose.yaml) |
-| Adapt a Kubernetes deployment | [Kubernetes manifests](./examples/kubernetes/cluster-install/) or [Helm chart](./examples/kubernetes/firecrawl-helm/) |
-| Change Firecrawl product code | [Running Locally](https://docs.firecrawl.dev/contributing/guide), then the [contribution guide](./CONTRIBUTING.md) |
-| Connect an agent or terminal client | [Local MCP](https://docs.firecrawl.dev/mcp-server/local) or [Firecrawl CLI](https://docs.firecrawl.dev/sdks/cli#connect-the-cli-to-self-hosted-firecrawl) |
+| If you need to decide or do this                          | Start here                                                                                                                                                |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decide whether self-hosting fits and run the first scrape | [Public self-hosting guide](https://docs.firecrawl.dev/contributing/self-host)                                                                            |
+| Check which variables and services exist at this revision | [Root Compose configuration](./docker-compose.yaml)                                                                                                       |
+| Adapt a Kubernetes deployment                             | [Kubernetes manifests](./examples/kubernetes/cluster-install/) or [Helm chart](./examples/kubernetes/firecrawl-helm/)                                     |
+| Change Firecrawl product code                             | [Running Locally](https://docs.firecrawl.dev/contributing/guide), then the [contribution guide](./CONTRIBUTING.md)                                        |
+| Connect an agent or terminal client                       | [Local MCP](https://docs.firecrawl.dev/mcp-server/local) or [Firecrawl CLI](https://docs.firecrawl.dev/sdks/cli#connect-the-cli-to-self-hosted-firecrawl) |
 
 ## Keep the first run simple
 
@@ -26,8 +26,8 @@ the services and configuration match the revision you checked out.
   after provisioning the required database schema and application
   configuration. Changing this variable alone is not a complete authenticated
   deployment.
-- **Queue: NuQ PostgreSQL.** Keep it unless you intentionally set
-  `NUQ_BACKEND=fdb` and are prepared to operate FoundationDB.
+- **Queue: NuQ PostgreSQL.** Keep `NUQ_BACKEND=pg` and `FDB_CLUSTER_FILE`
+  empty unless you intentionally configure FoundationDB as described below.
 - **Scraping: bundled Playwright with basic fetch fallback.** Connect and
   configure a separate engine such as Fire-engine only when you need it.
 - **AI-backed features: no model provider.** Connect OpenAI, an OpenAI-compatible
@@ -40,11 +40,103 @@ Get this baseline working before swapping backends or adding providers.
 The root `.env` overrides only variables referenced by `docker-compose.yaml`.
 Do not use `apps/api/.env.example` as a drop-in Compose contract.
 
+## Deploy with Coolify on a VPS
+
+Use a **Git-based application** with the **Docker Compose** build pack, not
+Nixpacks or the API Dockerfile alone. The API needs the other Compose services.
+
+1. Select this repository and the branch containing your deployment changes.
+   Set **Base Directory** to `/` and **Docker Compose Location** to
+   `/docker-compose.yaml`. Reload the Compose definition after updating the
+   branch. Leave **Raw Compose Deployment** disabled so Coolify manages proxy
+   routing and its Compose extensions.
+2. In **Environment Variables**, keep `USE_DB_AUTHENTICATION=false`,
+   `NUQ_BACKEND=pg`, and `FDB_CLUSTER_FILE` empty for the first deployment.
+   Set a strong `POSTGRES_PASSWORD`; keep `POSTGRES_DB=postgres` for the bundled
+   `pg_cron` configuration. Leave the Redis, RabbitMQ, PostgreSQL host, and
+   Playwright URLs at their Compose defaults so they use service-name DNS.
+   Do not paste `apps/api/.env.example` into Coolify: it is not the Compose
+   environment contract. An OpenAI key is not required for ordinary scraping.
+3. Check resource limits against the VPS before deploying. The checked-in API
+   limit is 4 CPUs / 8 GiB and Playwright is 2 CPUs / 4 GiB. Lower the `cpus`
+   values in Compose if they exceed the server's vCPU count. These memory
+   limits are ceilings, not reservations; leave room for Coolify, the remaining
+   services, and image builds. Start with lower `CRAWL_CONCURRENT_REQUESTS`
+   and `MAX_CONCURRENT_JOBS` on a small VPS.
+4. For domain access, assign a domain **only to `api`**, for example
+   `https://crawl.example.com:3002`. Point its DNS record at the VPS. The port
+   suffix tells Coolify to route to container port `3002`; clients still use
+   `https://crawl.example.com` on normal HTTPS port `443`. If you change
+   `INTERNAL_PORT`, use that port in the domain setting too. Do not assign
+   domains or publish ports for the databases, browser, or workers.
+5. Before making the domain public, restrict access with an authenticated
+   reverse proxy or a private network/VPN. With `USE_DB_AUTHENTICATION=false`,
+   the API does not validate API keys. Neither `TEST_API_KEY` nor
+   `BULL_AUTH_KEY` adds API authentication. HTTPS alone is not access control.
+6. Deploy. The API health check requests `/` inside the container. A successful
+   response confirms HTTP availability, not a successful scrape. Check the API
+   and worker logs, then run the scrape below.
+
+The host mapping is bound to **`127.0.0.1:3002`**, not every interface. Coolify's
+proxy reaches the API through the Docker network; this binding prevents direct
+access to port `3002` from bypassing proxy access controls. Keep that binding
+when deploying to a public VPS. For private access without a public domain, use
+an SSH tunnel or another trusted network path.
+
+From the VPS itself, verify the API and a non-AI scrape:
+
+```bash
+curl --fail-with-body http://127.0.0.1:3002/
+
+curl --fail-with-body http://127.0.0.1:3002/v2/scrape \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com","formats":["markdown"]}'
+```
+
+Use the configured host `PORT` instead of `3002` if you changed it. For a
+domain request, use your HTTPS URL and the credentials required by your access
+control layer.
+
+### Coolify parsing and initialization
+
+Coolify's environment parser does not support Compose's `:+` alternative-value
+operator. An expression such as `${NUQ_BACKEND:+/var/fdb/fdb.cluster}` is
+interpreted as an invalid variable name and produces **“The key must start with
+a letter or underscore…”** before any image is built. The root Compose file
+uses a separate, optional `${FDB_CLUSTER_FILE:-}` reference instead.
+
+Coolify retains previously saved environment values when reloading Compose.
+Clear `FDB_CLUSTER_FILE` for PostgreSQL-only deployments.
+
+The `foundationdb-init` container is a one-shot job: exiting successfully is
+expected. Its `exclude_from_hc: true` flag tells Coolify not to count that exit
+against application health. This is a **Coolify extension**, not standard
+Compose. For standalone `docker compose` use, omit only that flag in a local
+copy; keep it in the definition deployed through Coolify.
+
+See [Coolify's Docker Compose documentation](https://coolify.io/docs/applications/builds/docker-compose)
+for domain routing, environment variables, and health-check behavior.
+
+### Optional FoundationDB queue
+
+Only when intentionally using the experimental FoundationDB backend, set both:
+
+```dotenv
+NUQ_BACKEND=fdb
+FDB_CLUSTER_FILE=/var/fdb/fdb.cluster
+```
+
+The path is inside the API container's shared volume, not a path on the VPS.
+Wait for `foundationdb-init` to exit with code `0` before sending work to that
+backend. Keep the cluster-file variable empty in PostgreSQL mode: a nonempty
+value also enables optional FoundationDB lookups in the queue router.
+
 ## What the stack runs
 
 At this revision, Compose runs the Firecrawl API and workers, Playwright, Redis,
 RabbitMQ, NuQ PostgreSQL, and FoundationDB services for the optional queue
-backend. Only the API is published to the host by default, on port `3002`.
+backend. Only the API is published to the host by default, on loopback
+`127.0.0.1:3002`; Coolify routes domain traffic over the Docker network.
 
 Self-hosting gives you source and infrastructure control. You also own
 security, availability, capacity, upgrades, data retention, and compliance.
