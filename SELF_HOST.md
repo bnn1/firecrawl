@@ -57,12 +57,12 @@ Nixpacks or the API Dockerfile alone. The API needs the other Compose services.
    Playwright URLs at their Compose defaults so they use service-name DNS.
    Do not paste `apps/api/.env.example` into Coolify: it is not the Compose
    environment contract. An OpenAI key is not required for ordinary scraping.
-3. Check resource limits against the VPS before deploying. The checked-in API
-   limit is 4 CPUs / 8 GiB and Playwright is 2 CPUs / 4 GiB. Lower the `cpus`
-   values in Compose if they exceed the server's vCPU count. These memory
-   limits are ceilings, not reservations; leave room for Coolify, the remaining
-   services, and image builds. Start with lower `CRAWL_CONCURRENT_REQUESTS`
-   and `MAX_CONCURRENT_JOBS` on a small VPS.
+3. The defaults target a shared 4-vCPU / 8-GiB VPS. The five services have a
+   combined memory ceiling of **4.75 GiB**, leaving roughly 3.25 GiB of an
+   8-GiB machine for the OS, Coolify, and other services (actual usable RAM
+   varies). Limits are ceilings, not reservations, and do not limit image
+   builds. Large pages or documents can still exhaust a container's limit.
+   See the resource budget below.
 4. For domain access, assign a domain **only to `api`**, for example
    `https://crawl.example.com:3002`. Point its DNS record at the VPS. The port
    suffix tells Coolify to route to container port `3002`; clients still use
@@ -77,18 +77,27 @@ Nixpacks or the API Dockerfile alone. The API needs the other Compose services.
    response confirms HTTP availability, not a successful scrape. Check the API
    and worker logs, then run the scrape below.
 
-The host mapping is bound to **`127.0.0.1:3002`**, not every interface. Coolify's
-proxy reaches the API through the Docker network; this binding prevents direct
-access to port `3002` from bypassing proxy access controls. Keep that binding
-when deploying to a public VPS. For private access without a public domain, use
-an SSH tunnel or another trusted network path.
+The host mapping defaults to **`172.30.0.3:3002`**, VPS 1's Hetzner private
+address. From VPS 2 (`172.30.0.2`), use **`http://172.30.0.3:3002`** as the
+Firecrawl base URL. No public domain or public port opening is required.
+VPS 1 must have this private address attached before deployment. For another
+host, set `API_BIND_ADDRESS` to its private IP; for local-only access, set it
+to `127.0.0.1`. Do not set it to `0.0.0.0` on a public VPS.
 
-From the VPS itself, verify the API and a non-AI scrape:
+Binding to a private IP does not restrict callers to VPS 2 alone. The default
+API is unauthenticated: trust the attached private-network members, or enforce
+a Docker-aware host firewall policy allowing TCP port `3002` from
+`172.30.0.2/32` and rejecting other sources. Ordinary UFW rules may be bypassed
+by Docker-published ports. Private Hetzner traffic is not automatically
+encrypted; use TLS if required. Remove any existing Coolify public domain or
+proxy route if this deployment should be private-only.
+
+From either VPS, verify the API and a non-AI scrape:
 
 ```bash
-curl --fail-with-body http://127.0.0.1:3002/
+curl --fail-with-body http://172.30.0.3:3002/
 
-curl --fail-with-body http://127.0.0.1:3002/v2/scrape \
+curl --fail-with-body http://172.30.0.3:3002/v2/scrape \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com","formats":["markdown"]}'
 ```
@@ -96,6 +105,36 @@ curl --fail-with-body http://127.0.0.1:3002/v2/scrape \
 Use the configured host `PORT` instead of `3002` if you changed it. For a
 domain request, use your HTTPS URL and the credentials required by your access
 control layer.
+
+### Shared-host resource budget
+
+| Service                      | Memory ceiling | CPU ceiling |
+| ---------------------------- | -------------- | ----------- |
+| API and its workers combined | 2560 MiB       | 2           |
+| Playwright                   | 1024 MiB       | 1           |
+| NuQ PostgreSQL               | 512 MiB        | 0.5         |
+| RabbitMQ                     | 512 MiB        | 0.5         |
+| Redis                        | 256 MiB        | 0.25        |
+
+Container swap is disabled by setting each `memswap_limit` equal to its memory
+limit. CPU ceilings are per-service maximums, not reserved cores.
+The browser's temporary cache is capped at 256 MiB and counts toward its
+container memory ceiling. Redis caps its dataset at 192 MiB with `noeviction`:
+when full it rejects writes rather than evicting queue or lock data. Monitor
+memory use and failed jobs; this is a low-throughput baseline, not a guarantee
+for arbitrary workloads.
+
+The effective scrape-process control is **`NUQ_WORKER_COUNT=1`**.
+**`CRAWL_CONCURRENT_REQUESTS=2`** sets the bundled browser's page limit.
+The old Compose variables `NUM_WORKERS_PER_QUEUE`, `MAX_CONCURRENT_JOBS`, and
+`BROWSER_POOL_SIZE` were unused by this revision and have been removed.
+In Coolify, clear or update previously saved concurrency values: Compose
+defaults do not overwrite existing environment values.
+
+FoundationDB and its initializer are behind the `fdb` Compose profile, so they
+do not run in the default PostgreSQL deployment. If an older deployment left
+them running, stop those two services through Coolify; do not delete their
+volumes. Keep that profile disabled on this shared-host baseline.
 
 ### Coolify parsing and initialization
 
@@ -119,12 +158,19 @@ for domain routing, environment variables, and health-check behavior.
 
 ### Optional FoundationDB queue
 
-Only when intentionally using the experimental FoundationDB backend, set both:
+Only when intentionally using the experimental FoundationDB backend, set:
 
 ```dotenv
+COMPOSE_PROFILES=fdb
 NUQ_BACKEND=fdb
 FDB_CLUSTER_FILE=/var/fdb/fdb.cluster
 ```
+
+The deployment's Compose invocation must enable the `fdb` profile (for example
+`docker compose --profile fdb up -d`, or `COMPOSE_PROFILES=fdb` in its
+environment). Merely passing the variable inside the API container does not
+enable a Compose profile. Budget additional RAM for FoundationDB; the
+4.75-GiB ceiling above covers only the default PostgreSQL deployment.
 
 The path is inside the API container's shared volume, not a path on the VPS.
 Wait for `foundationdb-init` to exit with code `0` before sending work to that
@@ -133,10 +179,10 @@ value also enables optional FoundationDB lookups in the queue router.
 
 ## What the stack runs
 
-At this revision, Compose runs the Firecrawl API and workers, Playwright, Redis,
-RabbitMQ, NuQ PostgreSQL, and FoundationDB services for the optional queue
-backend. Only the API is published to the host by default, on loopback
-`127.0.0.1:3002`; Coolify routes domain traffic over the Docker network.
+By default, Compose runs the Firecrawl API and workers, Playwright, Redis,
+RabbitMQ, and NuQ PostgreSQL. FoundationDB services require the `fdb` profile.
+Only the API is published to the host, on `172.30.0.3:3002` by default;
+Coolify can still route domain traffic over the Docker network if configured.
 
 Self-hosting gives you source and infrastructure control. You also own
 security, availability, capacity, upgrades, data retention, and compliance.

@@ -31,10 +31,9 @@ x-common-env: &common-env
   POSTGRES_HOST: ${POSTGRES_HOST:-nuq-postgres}
   POSTGRES_PORT: ${POSTGRES_PORT:-5432}
   USE_DB_AUTHENTICATION: ${USE_DB_AUTHENTICATION:-false}
-  NUM_WORKERS_PER_QUEUE: ${NUM_WORKERS_PER_QUEUE:-8}
-  CRAWL_CONCURRENT_REQUESTS: ${CRAWL_CONCURRENT_REQUESTS:-10}
-  MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
-  BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-5}
+  # The harness starts this many scrape worker processes (each handles one job).
+  NUQ_WORKER_COUNT: ${NUQ_WORKER_COUNT:-1}
+  CRAWL_CONCURRENT_REQUESTS: ${CRAWL_CONCURRENT_REQUESTS:-2}
   OPENAI_API_KEY: ${OPENAI_API_KEY}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL}
   MODEL_NAME: ${MODEL_NAME}
@@ -75,17 +74,17 @@ services:
       ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS}
       BLOCK_MEDIA: ${BLOCK_MEDIA}
       # Configure maximum concurrent pages for Playwright browser instances
-      MAX_CONCURRENT_PAGES: ${CRAWL_CONCURRENT_REQUESTS:-10}
+      MAX_CONCURRENT_PAGES: ${CRAWL_CONCURRENT_REQUESTS:-2}
     networks:
       - backend
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Resource limits for Docker Compose (not Swarm)
-    cpus: 2.0
-    mem_limit: 4G
-    memswap_limit: 4G
+    # Shared 4-vCPU / 8-GiB host: keep browser concurrency and memory bounded.
+    cpus: 1.0
+    mem_limit: 1G
+    memswap_limit: 1G
     logging:
       driver: "json-file"
       options:
@@ -93,7 +92,7 @@ services:
         max-file: "3"
         compress: "true"
     tmpfs:
-      - /tmp/.cache:noexec,nosuid,size=1g
+      - /tmp/.cache:noexec,nosuid,size=256m
 
   api:
     <<: *common-service
@@ -118,10 +117,10 @@ services:
       nuq-postgres:
         condition: service_healthy
         required: false
-    # Coolify reaches the container over its Docker network. Keep the direct,
-    # unauthenticated host port private so it cannot bypass proxy access controls.
+    # Publish only on VPS 1's private interface, never its public interfaces.
+    # VPS 2 (172.30.0.2) connects to http://172.30.0.3:3002.
     ports:
-      - "127.0.0.1:${PORT:-3002}:${INTERNAL_PORT:-3002}"
+      - "${API_BIND_ADDRESS:-172.30.0.3}:${PORT:-3002}:${INTERNAL_PORT:-3002}"
     volumes:
       - fdb-cluster-file:/var/fdb:ro
     command: node dist/src/harness.js --start-docker
@@ -139,11 +138,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
-    # Resource limits for Docker Compose (not Swarm)
-    # Increase if you have more CPU cores/RAM available
-    cpus: 4.0
-    mem_limit: 8G
-    memswap_limit: 8G
+    # Aggregate limit for the API and all worker processes in this container.
+    cpus: 2.0
+    mem_limit: 2560M
+    memswap_limit: 2560M
 
   redis:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),
@@ -154,7 +152,11 @@ services:
 
     networks:
       - backend
-    command: redis-server --bind 0.0.0.0
+    # Do not evict queue/lock data when full; leave room for Redis overhead.
+    command: redis-server --bind 0.0.0.0 --maxmemory 192mb --maxmemory-policy noeviction
+    cpus: 0.25
+    mem_limit: 256M
+    memswap_limit: 256M
     logging:
       driver: "json-file"
       options:
@@ -167,6 +169,9 @@ services:
     networks:
       - backend
     command: rabbitmq-server
+    cpus: 0.5
+    mem_limit: 512M
+    memswap_limit: 512M
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 5s
@@ -185,6 +190,9 @@ services:
     # comment out the build: statement and uncomment the image: statement
     # image: ghcr.io/firecrawl/nuq-postgres:latest
     build: apps/nuq-postgres
+    cpus: 0.5
+    mem_limit: 512M
+    memswap_limit: 512M
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -208,11 +216,12 @@ services:
         max-file: "3"
         compress: "true"
 
-  # FoundationDB queue backend (experimental). Enable with NUQ_BACKEND=fdb and
-  # FDB_CLUSTER_FILE=/var/fdb/fdb.cluster; the api reads the shared cluster file
-  # from the fdb-cluster-file volume. Replaces nuq-postgres once stable.
+  # Experimental, excluded from the default PostgreSQL deployment to save RAM.
+  # Enable the fdb Compose profile as well as NUQ_BACKEND=fdb and
+  # FDB_CLUSTER_FILE=/var/fdb/fdb.cluster; budget additional memory separately.
   foundationdb:
     image: foundationdb/foundationdb:7.3.63
+    profiles: ["fdb"]
     environment:
       FDB_NETWORKING_MODE: container
       FDB_COORDINATOR_PORT: 4500
@@ -231,6 +240,7 @@ services:
   # one-shot: creates the database on first boot (no-op afterwards)
   foundationdb-init:
     image: foundationdb/foundationdb:7.3.63
+    profiles: ["fdb"]
     depends_on:
       - foundationdb
     entrypoint:
