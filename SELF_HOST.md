@@ -124,6 +124,11 @@ when full it rejects writes rather than evicting queue or lock data. Monitor
 memory use and failed jobs; this is a low-throughput baseline, not a guarantee
 for arbitrary workloads.
 
+RabbitMQ has a 90-second startup grace period and a 15-second health-check
+timeout for this CPU-limited configuration. A successful check allows the API
+to start immediately; it does not have to wait the full grace period.
+The API still requires RabbitMQ to be healthy before starting.
+
 The effective scrape-process control is **`NUQ_WORKER_COUNT=1`**.
 **`CRAWL_CONCURRENT_REQUESTS=2`** sets the bundled browser's page limit.
 The old Compose variables `NUM_WORKERS_PER_QUEUE`, `MAX_CONCURRENT_JOBS`, and

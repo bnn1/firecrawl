@@ -174,10 +174,11 @@ services:
     memswap_limit: 512M
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
-      interval: 5s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      # Cold boot on a shared, CPU-limited VPS can exceed 30 seconds.
+      interval: 10s
+      timeout: 15s
+      retries: 6
+      start_period: 90s
     logging:
       driver: "json-file"
       options:
