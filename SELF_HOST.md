@@ -77,27 +77,22 @@ Nixpacks or the API Dockerfile alone. The API needs the other Compose services.
    response confirms HTTP availability, not a successful scrape. Check the API
    and worker logs, then run the scrape below.
 
-The host mapping defaults to **`172.30.0.3:3002`**, VPS 1's Hetzner private
-address. From VPS 2 (`172.30.0.2`), use **`http://172.30.0.3:3002`** as the
-Firecrawl base URL. No public domain or public port opening is required.
-VPS 1 must have this private address attached before deployment. For another
-host, set `API_BIND_ADDRESS` to its private IP; for local-only access, set it
-to `127.0.0.1`. Do not set it to `0.0.0.0` on a public VPS.
+The host mapping defaults to **`127.0.0.1:3002`** for local-only access on
+the Firecrawl VPS. No Hetzner private-network address is required. In Coolify,
+remove any old `API_BIND_ADDRESS` override or set it to `127.0.0.1` before
+redeploying. Do not set it to `0.0.0.0` on a public VPS.
 
-Binding to a private IP does not restrict callers to VPS 2 alone. The default
-API is unauthenticated: trust the attached private-network members, or enforce
-a Docker-aware host firewall policy allowing TCP port `3002` from
-`172.30.0.2/32` and rejecting other sources. Ordinary UFW rules may be bypassed
-by Docker-published ports. Private Hetzner traffic is not automatically
-encrypted; use TLS if required. Remove any existing Coolify public domain or
-proxy route if this deployment should be private-only.
+Another VPS cannot directly reach this loopback binding. Use an SSH tunnel,
+or configure a secured reverse-proxy route as described above. Loopback
+binding does not disable existing Coolify domain routes; remove those routes
+if this deployment should be local-only.
 
-From either VPS, verify the API and a non-AI scrape:
+On the Firecrawl VPS, verify the API and a non-AI scrape:
 
 ```bash
-curl --fail-with-body http://172.30.0.3:3002/
+curl --fail-with-body http://127.0.0.1:3002/
 
-curl --fail-with-body http://172.30.0.3:3002/v2/scrape \
+curl --fail-with-body http://127.0.0.1:3002/v2/scrape \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com","formats":["markdown"]}'
 ```
@@ -186,7 +181,7 @@ value also enables optional FoundationDB lookups in the queue router.
 
 By default, Compose runs the Firecrawl API and workers, Playwright, Redis,
 RabbitMQ, and NuQ PostgreSQL. FoundationDB services require the `fdb` profile.
-Only the API is published to the host, on `172.30.0.3:3002` by default;
+Only the API is published to the host, on `127.0.0.1:3002` by default;
 Coolify can still route domain traffic over the Docker network if configured.
 
 Self-hosting gives you source and infrastructure control. You also own

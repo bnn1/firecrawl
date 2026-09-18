@@ -117,10 +117,9 @@ services:
       nuq-postgres:
         condition: service_healthy
         required: false
-    # Publish only on VPS 1's private interface, never its public interfaces.
-    # VPS 2 (172.30.0.2) connects to http://172.30.0.3:3002.
+    # Publish only on host loopback, never on public interfaces by default.
     ports:
-      - "${API_BIND_ADDRESS:-172.30.0.3}:${PORT:-3002}:${INTERNAL_PORT:-3002}"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${PORT:-3002}:${INTERNAL_PORT:-3002}"
     volumes:
       - fdb-cluster-file:/var/fdb:ro
     command: node dist/src/harness.js --start-docker
