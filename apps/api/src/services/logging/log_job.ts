@@ -38,6 +38,10 @@ import {
   writeScrapeJobState,
 } from "../../lib/job-state-store";
 import { buildReplayContextFromScrape } from "../../lib/scrape-interact/scrape-replay";
+import {
+  initializeRequestCredits,
+  recordRequestCredits,
+} from "../../lib/request-credits-store";
 configDotenv();
 
 const previewTeamId = "3adefd26-77ec-5968-8dcf-c94b5630d1de";
@@ -80,6 +84,22 @@ async function writeFeedbackJobSafely(
       error,
       jobId: params.jobId,
       endpoint: params.endpoint,
+    });
+  }
+}
+
+async function recordRequestCreditsSafely(
+  params: Parameters<typeof recordRequestCredits>[0],
+  logger: Logger,
+): Promise<void> {
+  try {
+    await recordRequestCredits(params);
+  } catch (error) {
+    logger.error("Failed to record request credits in Bigtable", {
+      error,
+      requestId: params.requestId,
+      jobId: params.jobId,
+      credits: params.credits,
     });
   }
 }
@@ -180,12 +200,14 @@ function getPubSubClient(logger: Logger): PubSub | null {
   }
 }
 
-// One Topic per table so publishes share a batch.
+// One Topic per table so publishes share a batch. The topic is named after
+// the table, behind the optional environment prefix (see PUBSUB_TOPIC_PREFIX).
 function getTopic(client: PubSub, table: string): Topic {
-  let topic = pubSubTopics.get(table);
+  const name = `${config.PUBSUB_TOPIC_PREFIX}${table}`;
+  let topic = pubSubTopics.get(name);
   if (!topic) {
-    topic = client.topic(table, PUBSUB_PUBLISH_OPTIONS);
-    pubSubTopics.set(table, topic);
+    topic = client.topic(name, PUBSUB_PUBLISH_OPTIONS);
+    pubSubTopics.set(name, topic);
   }
   return topic;
 }
@@ -486,6 +508,7 @@ type LoggedRequest = {
   external_request_id?: string | null;
   jobAccess?: boolean;
   jobAccessExpiresAt?: Date;
+  creditsShards?: number;
 };
 
 /**
@@ -578,6 +601,17 @@ async function logRequestInternal(request: LoggedRequest) {
       logger.error("Failed to write API job access to Bigtable", {
         error,
         kind: request.kind,
+      });
+    }
+  }
+
+  if (request.creditsShards !== undefined) {
+    try {
+      await initializeRequestCredits(request.id, request.creditsShards);
+    } catch (error) {
+      logger.error("Failed to initialize request credits in Bigtable", {
+        error,
+        shards: request.creditsShards,
       });
     }
   }
@@ -708,6 +742,17 @@ async function logScrapeInternal(scrape: LoggedScrape, force: boolean = false) {
     force,
     logger,
   );
+
+  if (scrape.id !== scrape.request_id) {
+    await recordRequestCreditsSafely(
+      {
+        requestId: scrape.request_id,
+        jobId: scrape.id,
+        credits: scrape.credits_cost,
+      },
+      logger,
+    );
+  }
 
   if (!scrape.is_parse && scrape.id === scrape.request_id) {
     try {
@@ -988,6 +1033,17 @@ async function logSearchInternal(search: LoggedSearch, force: boolean = false) {
     force,
     logger,
   );
+
+  if (search.id !== search.request_id) {
+    await recordRequestCreditsSafely(
+      {
+        requestId: search.request_id,
+        jobId: search.id,
+        credits: search.credits_cost,
+      },
+      logger,
+    );
+  }
 
   if (search.results && !search.zeroDataRetention) {
     await saveSearchToGCS(search, logger);
