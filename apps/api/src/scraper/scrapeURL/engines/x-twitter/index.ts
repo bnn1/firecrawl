@@ -1,43 +1,33 @@
 import { xai } from "@ai-sdk/xai";
 import { generateText, jsonSchema, Output } from "ai";
 import { config } from "../../../../config";
+import { withUsageTelemetry } from "../../../../lib/ai-usage-telemetry";
 import { Meta } from "../..";
 import { EngineScrapeResult } from "..";
 import { EngineError, XTwitterConfigurationError } from "../../error";
 import { safeMarkdownToHtml } from "../pdf/markdownToHtml";
+import {
+  isXTwitterUrl,
+  parseXTwitterUrl,
+  type XTwitterPostUrl,
+  type XTwitterProfileUrl,
+} from "./url";
+
+export { isXTwitterUrl };
 
 const XAI_RESPONSES_MODEL = "grok-4-1-fast-non-reasoning";
 
-const RESERVED_PROFILE_PATHS = new Set([
-  "compose",
-  "explore",
-  "hashtag",
-  "home",
-  "i",
-  "intent",
-  "login",
-  "logout",
-  "messages",
-  "notifications",
-  "search",
-  "settings",
-  "share",
-]);
-
-type XTwitterProfileUrl = {
-  kind: "profile";
-  handle: string;
-  normalizedUrl: string;
-};
-
-type XTwitterPostUrl = {
-  kind: "post";
-  handle?: string;
-  postId: string;
-  normalizedUrl: string;
-};
-
-type XTwitterUrl = XTwitterProfileUrl | XTwitterPostUrl;
+function xTwitterTelemetry(functionId: string, meta: Meta) {
+  return {
+    isEnabled: !meta.internalOptions.zeroDataRetention,
+    functionId,
+    metadata: {
+      scrapeId: meta.id,
+      teamId: meta.internalOptions.teamId ?? "",
+      feature: "x-twitter",
+    },
+  };
+}
 
 type ProfilePost = {
   text: string;
@@ -206,99 +196,6 @@ const postSchema = {
   ],
   additionalProperties: false,
 };
-
-function parseXTwitterUrl(url: string): XTwitterUrl | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    return null;
-  }
-
-  const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-  if (
-    hostname !== "x.com" &&
-    hostname !== "twitter.com" &&
-    hostname !== "mobile.twitter.com"
-  ) {
-    return null;
-  }
-
-  const segments = parsed.pathname
-    .split("/")
-    .map(segment => segment.trim())
-    .filter(Boolean);
-
-  if (segments.length === 0) {
-    return null;
-  }
-
-  if (
-    segments.length >= 4 &&
-    segments[0] === "i" &&
-    segments[1] === "web" &&
-    segments[2] === "status" &&
-    isPostId(segments[3])
-  ) {
-    return {
-      kind: "post",
-      postId: segments[3],
-      normalizedUrl: `https://x.com/i/web/status/${segments[3]}`,
-    };
-  }
-
-  if (
-    segments.length >= 3 &&
-    segments[0] === "i" &&
-    segments[1] === "status" &&
-    isPostId(segments[2])
-  ) {
-    return {
-      kind: "post",
-      postId: segments[2],
-      normalizedUrl: `https://x.com/i/web/status/${segments[2]}`,
-    };
-  }
-
-  if (
-    segments.length >= 3 &&
-    isHandle(segments[0]) &&
-    ["status", "statuses"].includes(segments[1]) &&
-    isPostId(segments[2])
-  ) {
-    const handle = segments[0];
-    const postId = segments[2];
-    return {
-      kind: "post",
-      handle,
-      postId,
-      normalizedUrl: `https://x.com/${handle}/status/${postId}`,
-    };
-  }
-
-  if (
-    segments.length === 1 &&
-    isHandle(segments[0]) &&
-    !RESERVED_PROFILE_PATHS.has(segments[0].toLowerCase())
-  ) {
-    const handle = segments[0];
-    return {
-      kind: "profile",
-      handle,
-      normalizedUrl: `https://x.com/${handle}`,
-    };
-  }
-
-  return null;
-}
-
-export function isXTwitterUrl(url: string): boolean {
-  return parseXTwitterUrl(url) !== null;
-}
 
 export async function scrapeURLWithXTwitter(
   meta: Meta,
@@ -512,7 +409,7 @@ async function fetchProfile(
   meta: Meta,
 ): Promise<XTwitterProfileData> {
   const { output } = await generateText({
-    model: xai.responses(XAI_RESPONSES_MODEL),
+    model: withUsageTelemetry(xai.responses(XAI_RESPONSES_MODEL)),
     maxOutputTokens: 20000,
     tools: {
       x_search: xai.tools.xSearch(),
@@ -525,6 +422,7 @@ async function fetchProfile(
         "Current public X/Twitter profile data and latest top-level posts.",
     }),
     abortSignal: meta.abort.asSignal(),
+    experimental_telemetry: xTwitterTelemetry("xTwitter/profile", meta),
     prompt: `Give me current public X/Twitter profile details for @${xUrl.handle}: display name, username, profile picture URL, bio, follower count, verification status, and profile URL. Also return exactly the 5 latest posts authored by @${xUrl.handle} that are top-level posts, not replies or comments. Include fewer posts only if fewer public non-reply posts are available. Use the current public X data available to x_search.`,
   });
 
@@ -548,7 +446,7 @@ async function fetchPost(
       };
 
   const { output } = await generateText({
-    model: xai.responses(XAI_RESPONSES_MODEL),
+    model: withUsageTelemetry(xai.responses(XAI_RESPONSES_MODEL)),
     maxOutputTokens: 20000,
     tools: {
       x_search: xai.tools.xSearch(toolsOptions),
@@ -561,18 +459,11 @@ async function fetchPost(
         "Current public X/Twitter post data with metrics, thread, and top comments.",
     }),
     abortSignal: meta.abort.asSignal(),
+    experimental_telemetry: xTwitterTelemetry("xTwitter/post", meta),
     prompt: `Fetch the public X/Twitter post${handlePart} with post id ${xUrl.postId} at ${xUrl.normalizedUrl}. Return the post body in text as GitHub-flavored Markdown, preserving its original structure like headings and lists. Also return author, URL, created date, likes, and retweets. If this post is part of a thread, return the unrolled thread in chronological order under thread. Return the top 5 public comments or replies to the post under comments. Use the current public X data available to x_search.`,
   });
 
   return output as XTwitterPostData;
-}
-
-function isHandle(value: string): boolean {
-  return /^[A-Za-z0-9_]{1,15}$/.test(value);
-}
-
-function isPostId(value: string): boolean {
-  return /^\d{5,}$/.test(value);
 }
 
 function stripAt(value: string | null | undefined): string | undefined {

@@ -388,6 +388,15 @@ const configSchema = z.object({
   FIRE_PDF_PERCENT: z.coerce.number().min(0).max(100).default(10),
   FIRE_PDF_BASE_URL: z.string().optional(),
   FIRE_PDF_API_KEY: z.string().optional(),
+  // Cached fire-pdf results are looked up through this service when set
+  // (POST /cache/lookup, same key as FIRE_PDF_API_KEY), and fire-pdf writes
+  // them; without it the bucket is read and written from here.
+  FIRE_PDF_CACHE_BASE_URL: z.string().optional(),
+  // `parsers: [{ type: "pdf", refresh: true }]` skips the content cache and
+  // forces a fresh parse. Per team, per minute, budgeted here or by the
+  // cache service when one is configured; beyond the budget the request is
+  // served normally. 0 disables the option.
+  FIRE_PDF_CACHE_REFRESH_PER_MINUTE: z.coerce.number().int().min(0).default(10),
   // Raster image OCR of image URLs and parse uploads through FirePDF (see
   // lib/image-ocr-gate.ts). Needs FIRE_PDF_BASE_URL.
   IMAGE_OCR_ENABLED: z.stringbool().default(false),
@@ -444,7 +453,8 @@ const configSchema = z.object({
     .int()
     .positive()
     .default(256 * 1024 * 1024),
-  // Comma-separated team ids granted the privileged cap.
+  // Comma-separated team ids granted the privileged cap. Prefer the
+  // `largePdfs` team flag, which grants the same cap without a deploy.
   PDF_BY_REFERENCE_PRIVILEGED_TEAM_IDS: z.string().optional(),
 
   // RunPod
@@ -591,9 +601,7 @@ const configSchema = z.object({
   WIKIPEDIA_ENTERPRISE_PASSWORD: z.string().optional(),
 
   // Browser Service
-  BROWSER_SERVICE_URL: z.string().optional(),
-  BROWSER_SERVICE_API_KEY: z.string().optional(),
-  BROWSER_SERVICE_WEBHOOK_SECRET: z.string().optional(),
+  HANGAR_URL: z.url().optional(),
 
   // Audio (avgrab)
   AVGRAB_SERVICE_URL: z.string().optional(),

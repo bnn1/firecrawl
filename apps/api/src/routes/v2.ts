@@ -1,3 +1,4 @@
+import { agentHintsMiddleware } from "../middlewares/agent-hints";
 import express from "express";
 import multer from "multer";
 import { config } from "../config";
@@ -63,16 +64,15 @@ import { agentSnapshotController } from "../controllers/v2/agent-snapshot";
 import { agentSkillController } from "../controllers/v2/agent-skill";
 import { agentThreadController } from "../controllers/v2/agent-thread";
 import {
+  browserProfileDeleteController,
   browserCreateController,
   browserExecuteController,
   browserDeleteController,
   browserListController,
-  browserWebhookDestroyedController,
-} from "../controllers/v2/browser";
-import {
   browserReplayController,
   browserReplayPageController,
-} from "../controllers/v2/browser-replay";
+  browserStatusController,
+} from "../controllers/v2/browser";
 import { activityController } from "../controllers/v1/activity";
 import {
   getTeamThreatProtectionController,
@@ -188,8 +188,12 @@ registerMcpActionLogReadRoute(
 
 v2Router.post(
   "/search",
+  agentHintsMiddleware("search"),
   researchCategoryNoticeMiddleware,
-  authMiddleware(RateLimiterMode.Search, { allowKeyless: true }),
+  authMiddleware(RateLimiterMode.Search, {
+    allowKeyless: true,
+    allowAgentManagedKey: true,
+  }),
   countryCheck,
   checkCreditsMiddleware(undefined, SEARCH_CREDITS_FEATURE_ID),
   blocklistMiddleware,
@@ -225,6 +229,7 @@ v2Router.put(
 
 v2Router.post(
   "/parse",
+  agentHintsMiddleware("parse"),
   authMiddleware(RateLimiterMode.Scrape, { allowKeyless: true }),
   countryCheck,
   checkCreditsMiddleware(1),
@@ -234,7 +239,11 @@ v2Router.post(
 
 v2Router.post(
   "/scrape",
-  authMiddleware(RateLimiterMode.Scrape, { allowKeyless: true }),
+  agentHintsMiddleware("scrape"),
+  authMiddleware(RateLimiterMode.Scrape, {
+    allowKeyless: true,
+    allowAgentManagedKey: true,
+  }),
   countryCheck,
   checkCreditsMiddleware(1),
   scrapeBlocklistMiddleware,
@@ -264,7 +273,7 @@ v2Router.delete(
 
 v2Router.post(
   "/batch/scrape",
-  authMiddleware(RateLimiterMode.Scrape),
+  authMiddleware(RateLimiterMode.Scrape, { allowAgentManagedKey: true }),
   countryCheck,
   checkCreditsMiddleware(),
   blocklistMiddleware,
@@ -273,6 +282,7 @@ v2Router.post(
 
 v2Router.post(
   "/map",
+  agentHintsMiddleware("map"),
   authMiddleware(RateLimiterMode.Map),
   checkCreditsMiddleware(1),
   blocklistMiddleware,
@@ -340,14 +350,14 @@ v2Router.ws(
 
 v2Router.get(
   "/batch/scrape/:jobId",
-  authMiddleware(RateLimiterMode.CrawlStatus),
+  authMiddleware(RateLimiterMode.CrawlStatus, { allowAgentManagedKey: true }),
   validateJobIdParam,
   wrap((req: any, res: any) => crawlStatusController(req, res, true)),
 );
 
 v2Router.delete(
   "/batch/scrape/:jobId",
-  authMiddleware(RateLimiterMode.CrawlStatus),
+  authMiddleware(RateLimiterMode.CrawlStatus, { allowAgentManagedKey: true }),
   validateJobIdParam,
   wrap(crawlCancelController),
 );
@@ -624,7 +634,7 @@ v2Router.post("/slack/events", wrap(slackEventsController));
 
 v2Router.post(
   ["/browser", "/interact"],
-  authMiddleware(RateLimiterMode.Browser),
+  authMiddleware(RateLimiterMode.Browser, { allowAgentManagedKey: true }),
   countryCheck,
   checkCreditsMiddleware(2),
   wrap(browserCreateController),
@@ -655,14 +665,23 @@ v2Router.get(
 );
 
 v2Router.delete(
-  ["/browser/:sessionId", "/interact/:sessionId"],
+  ["/browser/profiles/:name", "/interact/profiles/:name"],
   authMiddleware(RateLimiterMode.BrowserExecute),
+  wrap(browserProfileDeleteController),
+);
+
+v2Router.delete(
+  ["/browser/:sessionId", "/interact/:sessionId"],
+  authMiddleware(RateLimiterMode.BrowserExecute, {
+    allowAgentManagedKey: true,
+  }),
   wrap(browserDeleteController),
 );
 
-v2Router.post(
-  "/browser/webhook/destroyed",
-  wrap(browserWebhookDestroyedController),
+v2Router.get(
+  ["/browser/:sessionId", "/interact/:sessionId"],
+  authMiddleware(RateLimiterMode.BrowserExecute),
+  wrap(browserStatusController),
 );
 
 // Support agent proxy — forwards to the support-agent service.
