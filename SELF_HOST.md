@@ -51,7 +51,11 @@ Nixpacks or the API Dockerfile alone. The API needs the other Compose services.
    branch. Leave **Raw Compose Deployment** disabled so Coolify manages proxy
    routing and its Compose extensions.
 2. In **Environment Variables**, keep `USE_DB_AUTHENTICATION=false`,
-   `NUQ_BACKEND=pg`, and `FDB_CLUSTER_FILE` empty for the first deployment.
+   `ALLOW_LOCAL_WEBHOOKS=false`, `NUQ_BACKEND=pg`, and `FDB_CLUSTER_FILE` empty
+   for the first deployment. Boolean settings must use valid values such as
+   `true` or `false`, not blank strings. If the API reports a validation error
+   for `ALLOW_LOCAL_WEBHOOKS`, replace its saved Coolify value with `false`
+   and redeploy; this keeps local webhook destinations blocked.
    Set a strong `POSTGRES_PASSWORD`; keep `POSTGRES_DB=postgres` for the bundled
    `pg_cron` configuration. Leave the Redis, RabbitMQ, PostgreSQL host, and
    Playwright URLs at their Compose defaults so they use service-name DNS.
